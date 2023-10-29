@@ -12,6 +12,7 @@ AWS = boto3.Session()
 CLOUD_FORMATION = AWS.client('cloudformation')
 SSH_CLIENT = SSHClient()
 SSH_CLIENT.set_missing_host_key_policy(AutoAddPolicy())
+SUPPORTED_SERVICES = ["http", "socks", "openvpn"]
 
 
 class LoggerColourFormatter(logging.Formatter):
@@ -44,7 +45,8 @@ def getIpCidr():
     try:
         return f"{get('https://api.ipify.org').content.decode('utf8')}/32"
     except Exception as e:
-        LOGGER.exception(f"FAILED to get the user's current public IP address with ipify:\n{e}")
+        LOGGER.error("FAILED to get the user's current public IP address with ipify")
+        raise e
 
 
 def parseArgs():
@@ -82,8 +84,7 @@ def parseArgs():
         help="The forwarding proxy or VPN services to install on the box. By default, this includes http and socks proxies, as well as an OpenVPN server. Supply a different set of services here if you so choose, seperated by spaces (e.g. '--services http socks openvpn')",
         required=False,
         nargs="+",
-        choices=["http", "socks", "openvpn"],
-        default=["http", "socks", "openvpn"]
+        default=SUPPORTED_SERVICES
     )
     parser.add_argument(
         "-t", "--template-file",
@@ -179,11 +180,19 @@ def parseArgs():
     try:
         ipaddress.ip_network(localArgs.whitelisted_ip_range)
     except ValueError:
-        LOGGER.exception(f"{localArgs.whitelisted_ip_range} is an invalid Cidr IP address format. All whitelisted IPs must be provided in Cidr format (e.g. '183.231.111.41/32')")
+        LOGGER.error(f"{localArgs.whitelisted_ip_range} is an invalid Cidr IP address format. All whitelisted IPs must be provided in Cidr format (e.g. '183.231.111.41/32')")
+        sys.exit(1)
 
     # Check if cloud template exists
     if os.path.exists(localArgs.template_file) is False:
-        LOGGER.exception(f"Could not find cloud formation template file at {localArgs.file}")
+        LOGGER.error(f"Could not find cloud formation template file at {localArgs.file}")
+        sys.exit(1)
+
+    # Check given services are valid
+    for userService in localArgs.services:
+        if userService.lower() not in SUPPORTED_SERVICES:
+            LOGGER.error(f"Service {userService.lower()} is not a supported service. Valid services are {SUPPORTED_SERVICES}")
+            sys.exit(1)
 
     return localArgs
 
@@ -194,13 +203,21 @@ def createSession():
     """
     # Get config if it exists
     credentialsPath = os.path.join(os.path.expanduser("~/.aws"), "credentials")
-    if os.path.exists(credentialsPath):
-        # Read AWS credentials from the cred file
-        LOGGER.info(f"Found AWS credentials file at ~{os.sep}.aws{os.sep}credentials")
-        awsConfig = configparser.ConfigParser().read(credentialsPath)
-        accessKeyId = awsConfig.get(ARGS.profile, "aws_access_key_id")
-        secretAccessKey = awsConfig.get(ARGS.profile, "aws_secret_access_key")
-        region = awsConfig.get(ARGS.profile, "region")
+    configPath = os.path.join(os.path.expanduser("~/.aws"), "config")
+    if os.path.exists(credentialsPath) and os.path.exists(configPath):
+        # Read AWS credentials and configs
+        LOGGER.info(f"Found AWS credentials file at {credentialsPath}")
+        LOGGER.info(f"Found AWS config file at {configPath}")
+        try:
+            awsConfig = configparser.ConfigParser()
+            awsConfig.read(credentialsPath)
+            accessKeyId = awsConfig.get(ARGS.profile, "aws_access_key_id")
+            secretAccessKey = awsConfig.get(ARGS.profile, "aws_secret_access_key")
+            awsConfig.read(configPath)
+            region = awsConfig.get(f"profile {ARGS.profile}", "region")
+        except Exception:
+            LOGGER.exception("Could not parse home AWS config files. Are these files readable to python?")
+            sys.exit(1)
 
     # Overwrite with custom values if they exist
     if ARGS.access_key_id is not None:
@@ -234,8 +251,9 @@ def deployCloudTemplate():
     try:
         with open(ARGS.template_file, "r") as templateFile:
             yamlContent = yaml.load(templateFile)
-    except OSError as e:
-        LOGGER.exception(f"FAILED to open cloud formation template file at {ARGS.template_file}\n{e}")
+    except OSError:
+        LOGGER.exception(f"FAILED to open cloud formation template file at {ARGS.template_file}")
+        sys.exit(1)
     jsonContent = json.dumps(yamlContent)
 
     # Generate stack name
@@ -264,7 +282,8 @@ def deployCloudTemplate():
             EnableTerminationProtection=False
         )["StackId"]
     except Exception as e:
-        LOGGER.exception(f"FAILED to create cloud stack '{newStackName}':\n{e}")
+        LOGGER.error(f"FAILED to create cloud stack '{newStackName}'")
+        raise e
 
 
 def loginEC2Box(stackId: str):
@@ -276,7 +295,8 @@ def loginEC2Box(stackId: str):
     try:
         keyPairId = CLOUD_FORMATION.describe_stack_resources(StackName=stackId, LogicalResourceId="KeyPair")["StackResources"][0]["PhysicalResourceId"]
     except Exception as e:
-        LOGGER.exception(f"FAILED to retrieve physical resource ID of key pair for {stackId}\n{e}")
+        LOGGER.error(f"FAILED to retrieve physical resource ID of key pair for {stackId}")
+        raise e
     
     # Get private key
     LOGGER.info("Retrieving SSH private key for EC2 box from Systems Manager...")
@@ -284,7 +304,8 @@ def loginEC2Box(stackId: str):
     try:
         ec2PrivateKey = ssm.get_parameter(Name=f"/ec2/keypair/{keyPairId}", WithDecryption=False)["Parameter"]["Value"]
     except Exception as e:
-        LOGGER.info(f"FAILED to get private key '/ec2/keypair/{keyPairId}' value\n{e}")
+        LOGGER.error(f"FAILED to get private key '/ec2/keypair/{keyPairId}' value")
+        raise e
     
     # Establish connection
     ec2Ip = getStackDetails(stackId)["Outputs"][0]["OutputValue"]
@@ -297,7 +318,8 @@ def loginEC2Box(stackId: str):
         )
         return ec2Ip
     except Exception as e:
-        LOGGER.exception(f"FAILED to establish ssh connection to EC2 box at {ec2Ip}\n{e}")
+        LOGGER.error(f"FAILED to establish ssh connection to EC2 box at {ec2Ip}")
+        raise e
 
 
 def setupEC2Box():
@@ -313,7 +335,8 @@ def setupEC2Box():
         if os.path.exists(ARGS.install_script):
             SCP.put(files=ARGS.install_script, remote_path=SCRIPT_PATH)
         else:
-            LOGGER.exception(f"Could not find install-script.sh file at {ARGS.install_script}")
+            LOGGER.error(f"Could not find install-script.sh file at {ARGS.install_script}")
+            sys.exit(1)
         
         # Generate service credentials
         httpPassword = generatePassword()
@@ -332,7 +355,8 @@ def setupEC2Box():
         # Get result
         scriptResult = stdout.channel.recv_exit_status()
     except Exception as e:
-        LOGGER.exception(f"FAILED to copy over and/or run the install script\n{e}")
+        LOGGER.error(f"FAILED to copy over and/or run the install script")
+        raise e
     finally:
         LOGGER.info("Closing SSH connections...")
         SCP.close()
@@ -355,7 +379,8 @@ def getStackDetails(stackId: str):
     try:
         return CLOUD_FORMATION.describe_stacks(StackName=stackId)["Stacks"][0]
     except Exception as e:
-        LOGGER.info(f"FAILED to get details for stack '{stackId}':\n{e}")
+        LOGGER.error(f"FAILED to get details for stack '{stackId}'")
+        raise e
 
 
 def main():
@@ -373,7 +398,8 @@ def main():
         sts = AWS.client("sts")
         caller = sts.get_caller_identity()
     except Exception as e:
-        LOGGER.exception(f"FAILED to authenticate to AWS:\n{e}")
+        LOGGER.error(f"FAILED to authenticate to AWS")
+        raise e
     
     LOGGER.info(f"Successfully authenticated to AWS as {caller['Arn']}")
     
