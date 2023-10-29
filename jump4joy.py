@@ -1,5 +1,6 @@
-import boto3, os, configparser, logging, argparse, sys, ipaddress, yaml, json, secrets, string, time
+import boto3, os, configparser, logging, argparse, sys, ipaddress, secrets, string, time
 from requests import get
+from cfn_tools import load_yaml, dump_yaml
 from paramiko import SSHClient, AutoAddPolicy
 from scp import SCPClient
 
@@ -250,11 +251,11 @@ def deployCloudTemplate():
     yamlContent = ""
     try:
         with open(ARGS.template_file, "r") as templateFile:
-            yamlContent = yaml.load(templateFile)
+            yamlContent = load_yaml(templateFile)
     except OSError:
         LOGGER.exception(f"FAILED to open cloud formation template file at {ARGS.template_file}")
         sys.exit(1)
-    jsonContent = json.dumps(yamlContent)
+    jsonContent = dump_yaml(yamlContent)
 
     # Generate stack name
     LOGGER.info("Generating cloud formation stack name...")
@@ -271,12 +272,28 @@ def deployCloudTemplate():
         return CLOUD_FORMATION.create_stack(
             StackName=newStackName,
             TemplateBody=jsonContent,
-            Parameters=[{
-                "EC2Name": f"{newStackName}EC2Box",
-                "KeyPairName": f"{newStackName}KeyPair",
-                "SecurityGroupName": f"{newStackName}SecurityGroup",
-                "Cidr": ARGS.whitelisted_ip_range,
-            }],
+            Parameters=[
+                {
+                    "ParameterKey": "EC2Name",
+                    "ParameterValue": f"{newStackName}EC2Box",
+                    "UsePreviousValue": False
+                },
+                {
+                    "ParameterKey": "KeyPairName",
+                    "ParameterValue": f"{newStackName}KeyPair",
+                    "UsePreviousValue": False
+                },
+                {
+                    "ParameterKey": "SecurityGroupName",
+                    "ParameterValue": f"{newStackName}SecurityGroup",
+                    "UsePreviousValue": False
+                },
+                {
+                    "ParameterKey": "Cidr",
+                    "ParameterValue": ARGS.whitelisted_ip_range,
+                    "UsePreviousValue": False
+                }
+            ],
             TimeoutInMinutes=5,
             OnFailure="DELETE",
             EnableTerminationProtection=False
@@ -355,7 +372,7 @@ def setupEC2Box():
         # Get result
         scriptResult = stdout.channel.recv_exit_status()
     except Exception as e:
-        LOGGER.error(f"FAILED to copy over and/or run the install script")
+        LOGGER.error("FAILED to copy over and/or run the install script")
         raise e
     finally:
         LOGGER.info("Closing SSH connections...")
@@ -398,7 +415,7 @@ def main():
         sts = AWS.client("sts")
         caller = sts.get_caller_identity()
     except Exception as e:
-        LOGGER.error(f"FAILED to authenticate to AWS")
+        LOGGER.error("FAILED to authenticate to AWS")
         raise e
     
     LOGGER.info(f"Successfully authenticated to AWS as {caller['Arn']}")
@@ -409,7 +426,7 @@ def main():
     # Wait for completion
     stackStatus = getStackDetails(stackId)["StackStatus"]
     while stackStatus != "CREATE_COMPLETE":
-        LOGGER.info(f"Stack {stackId} is still building. Checking status again in 10 seconds...")
+        LOGGER.info(f"Stack '{stackId}' is building. Checking status again in 10 seconds...")
         time.sleep(10)
         stackStatus = getStackDetails(stackId)["StackStatus"]
     LOGGER.info(f"Successfully created jump4joy cloud formation stack '{stackId}'!")
