@@ -35,6 +35,7 @@ Mappings:
 
 
 Resources:
+
   EC2Image:
     Type: AWS::EC2::Instance
     Properties:

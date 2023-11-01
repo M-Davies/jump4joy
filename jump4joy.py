@@ -1,4 +1,4 @@
-import boto3, os, configparser, logging, argparse, sys, ipaddress, secrets, string, time
+import boto3, os, configparser, logging, argparse, sys, ipaddress, secrets, string, time, json
 from requests import get
 from cfn_tools import load_yaml, dump_yaml
 from paramiko import SSHClient, AutoAddPolicy
@@ -10,7 +10,7 @@ LOGGER = logging.getLogger()
 DEFAULT_TEMPLATE_PATH = f"{os.getcwd()}{os.sep}cloud-formation-template.yml"
 DEFAULT_SCRIPT_PATH = f"{os.getcwd()}{os.sep}install-software.sh"
 AWS = boto3.Session()
-CLOUD_FORMATION = AWS.client('cloudformation')
+CLOUD_FORMATION = AWS.client('cloudformation', region_name="eu-west-2")
 SSH_CLIENT = SSHClient()
 SSH_CLIENT.set_missing_host_key_policy(AutoAddPolicy())
 SUPPORTED_SERVICES = ["http", "socks", "openvpn"]
@@ -45,9 +45,9 @@ def getIpCidr():
     """
     try:
         return f"{get('https://api.ipify.org').content.decode('utf8')}/32"
-    except Exception as e:
-        LOGGER.error("FAILED to get the user's current public IP address with ipify")
-        raise e
+    except Exception:
+        LOGGER.warning("FAILED to get the user's current public IP address with https://api.ipify.org, will default to '0.0.0.0/0' (publicly accessible)")
+        return "0.0.0.0/0"
 
 
 def parseArgs():
@@ -100,7 +100,7 @@ def parseArgs():
         default=DEFAULT_SCRIPT_PATH
     )
     parser.add_argument(
-        "-c", "--disable-colours",
+        "-d", "--disable-colours",
         help="Disables colouring of log output. You might find this option useful if you're exclusively writing to a log file or on Windows.",
         required=False,
         action="store_true",
@@ -138,20 +138,31 @@ def parseArgs():
         default="openvpnuser123"
     )
     parser.add_argument(
+        "--openvpn-config",
+        help="Path to where the openvpn config file will be output to. Defaults to the current directory",
+        required=False,
+        default=os.getcwd()
+    )
+    parser.add_argument(
         "-v", "--verbose",
         help="Increase verbosity, will report progress for each interaction rather than just warnings and errors",
         required=False,
         action="store_true"
     )
     parser.add_argument(
+        "-c", "--credentials-file",
+        help="Saves the credentails for the proxy and VPN services to a JSON file you specify",
+        required=False
+    )
+    parser.add_argument(
         "-q", "--quiet",
-        help="No output to the console (log file output will still be present if specified), only errors will be shown",
+        help="No output to the console (log file output will still be present if specified), only errors will be shown. NOTE: If this option is specified, --credentials-file must also be specified",
         required=False,
         action="store_true"
     )
     parser.add_argument(
         "-l", "--log",
-        help="Produces a log file of verbose and non-verbose debug information.",
+        help="Produces a log file of verbose and non-verbose debug information at the path provided.",
         required=False
     )
     localArgs = parser.parse_args()
@@ -317,7 +328,7 @@ def loginEC2Box(stackId: str):
     
     # Get private key
     LOGGER.info("Retrieving SSH private key for EC2 box from Systems Manager...")
-    ssm = boto3.client('ssm')
+    ssm = AWS.client('ssm')
     try:
         ec2PrivateKey = ssm.get_parameter(Name=f"/ec2/keypair/{keyPairId}", WithDecryption=False)["Parameter"]["Value"]
     except Exception as e:
@@ -368,9 +379,15 @@ def setupEC2Box():
         stdin, stdout, stderr = SSH_CLIENT.exec_command(command=script, timeout=ARGS.timeout)
         LOGGER.info(f"STDOUT:\n{stdout.readlines()}")
         LOGGER.info(f"STDERR:\n{stderr.readlines()}")
-
         # Get result
         scriptResult = stdout.channel.recv_exit_status()
+
+        # Retrieve openvpn config file
+        try:
+            SCP.get(remote_path=f"/home/ubuntu/{ARGS.openvpn_user}.ovpn", local_path=ARGS.openvpn_config)
+        except Exception as e:
+            LOGGER.error("FAILED to retrieve openvpn config file from the EC2 box")
+            raise e
     except Exception as e:
         LOGGER.error("FAILED to copy over and/or run the install script")
         raise e
@@ -384,8 +401,9 @@ def setupEC2Box():
         "passwords": {
             "http": httpPassword,
             "openvpn": openvpnPassword,
-            "socks": socksPassword,
-        }
+            "socks": socksPassword
+        },
+        "openvpn_config": ARGS.openvpn_config
     }
 
 
@@ -428,8 +446,12 @@ def main():
     while stackStatus["StackStatus"] != "CREATE_COMPLETE":
         # Error out if stack failed to build
         if stackStatus["StackStatus"] in ["ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "CREATE_FAILED"]:
-            LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Reason:\n{stackStatus['StackStatusReason']}")
-            sys.exit(1)
+            try:
+                LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Reason:\n{stackStatus['StackStatusReason']}.\nPlease see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
+            except KeyError:
+                LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Please see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
+            finally:
+                sys.exit(1)
         LOGGER.info("Stack is building. Checking again in 10 seconds...")
         time.sleep(10)
         stackStatus = getStackDetails(stackId)
@@ -444,10 +466,16 @@ def main():
     if outputs["code"] != 0:
         LOGGER.warning(f"Install script failed to sucessfully complete execution (exit code = {outputs['code']}). Please see the logs above for the reasons why.")
     else:
-        LOGGER.info("Printing credentials for services. THESE WILL NOT BE RECORDED IN LOGS, PLEASE SAVE THEM SECURELY NOW:")
-        print(f"HTTP Proxy Credentials (<username>:<password>) = '{ARGS.http_user}:{outputs['passwords']['http']}'")
-        print(f"OpenVPN Credentials (<username>:<password>) = '{ARGS.openvpn_user}:{outputs['passwords']['openvpn']}'")
-        print(f"SOCKS5 Proxy Credentials (<username>:<password>) = '{ARGS.socks_user}:{outputs['passwords']['socks']}'")
+        LOGGER.info("Gathering credentials for services...")
+        if ARGS.quiet is True or ARGS.credentials_file is not None:
+            try:
+                with open(ARGS.credentials_file, "w+") as credFile:
+                    credFile.write(json.dumps(outputs, indent=2))
+            except OSError:
+                LOGGER.warning(f"FAILED to save credentials to {ARGS.credentials_file}, falling back to printing them to STDOUT")
+                print(json.dumps(outputs, indent=2))
+        else:
+            print(json.dumps(outputs, indent=2))
     LOGGER.info(f"All stages complete. Proxy is available at {ec2Ip}.")
     print(f"All stages complete. Proxy is available at {ec2Ip}.")
 
