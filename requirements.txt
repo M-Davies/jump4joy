@@ -5,3 +5,4 @@ pyyaml
 paramiko
 scp
 requests
+cfn-flip
