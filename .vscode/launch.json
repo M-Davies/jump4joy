@@ -10,7 +10,12 @@
             "request": "launch",
             "program": "jump4joy.py",
             "console": "integratedTerminal",
-            "justMyCode": false
+            "justMyCode": false,
+            "args": [
+                "-s", "http", "socks", "openvpn",
+                "-p", "jump4joy",
+                "-v"
+            ]
         }
     ]
 }
