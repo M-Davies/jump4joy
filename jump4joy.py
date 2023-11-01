@@ -294,8 +294,8 @@ def deployCloudTemplate():
                     "UsePreviousValue": False
                 }
             ],
-            TimeoutInMinutes=5,
-            OnFailure="DELETE",
+            TimeoutInMinutes=10,
+            OnFailure="ROLLBACK",
             EnableTerminationProtection=False
         )["StackId"]
     except Exception as e:
@@ -424,11 +424,15 @@ def main():
     CLOUD_FORMATION = AWS.client("cloudformation")
     stackId = deployCloudTemplate()
     # Wait for completion
-    stackStatus = getStackDetails(stackId)["StackStatus"]
-    while stackStatus != "CREATE_COMPLETE":
-        LOGGER.info(f"Stack '{stackId}' is building. Checking status again in 10 seconds...")
+    stackStatus = getStackDetails(stackId)
+    while stackStatus["StackStatus"] != "CREATE_COMPLETE":
+        # Error out if stack failed to build
+        if stackStatus["StackStatus"] in ["ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "CREATE_FAILED"]:
+            LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Reason:\n{stackStatus['StackStatusReason']}")
+            sys.exit(1)
+        LOGGER.info("Stack is building. Checking again in 10 seconds...")
         time.sleep(10)
-        stackStatus = getStackDetails(stackId)["StackStatus"]
+        stackStatus = getStackDetails(stackId)
     LOGGER.info(f"Successfully created jump4joy cloud formation stack '{stackId}'!")
 
     # Login to EC2 box
@@ -449,5 +453,9 @@ def main():
 
 
 if __name__ == "__main__":
-    ARGS = parseArgs()
-    main()
+    try:
+        ARGS = parseArgs()
+        main()
+    except KeyboardInterrupt:
+        LOGGER.error("Keyboard interrupt recieved from user. Exiting...")
+        sys.exit(1)
