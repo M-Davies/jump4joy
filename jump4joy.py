@@ -1,7 +1,7 @@
-import boto3, os, configparser, logging, argparse, sys, ipaddress, secrets, string, time, json
+import boto3, os, configparser, logging, argparse, sys, ipaddress, secrets, string, time, json, io
 from requests import get
 from cfn_tools import load_yaml, dump_yaml
-from paramiko import SSHClient, AutoAddPolicy
+from paramiko import SSHClient, AutoAddPolicy, RSAKey
 from scp import SCPClient
 
 # GLOBALS
@@ -156,7 +156,7 @@ def parseArgs():
     )
     parser.add_argument(
         "-q", "--quiet",
-        help="No output to the console (log file output will still be present if specified), only errors will be shown. NOTE: If this option is specified, --credentials-file must also be specified",
+        help="No output to the console (log file output will still be present if specified), only exceptions will be shown. NOTE: If this option is specified, --credentials-file must also be specified",
         required=False,
         action="store_true"
     )
@@ -201,10 +201,14 @@ def parseArgs():
         sys.exit(1)
 
     # Check given services are valid
-    for userService in localArgs.services:
-        if userService.lower() not in SUPPORTED_SERVICES:
-            LOGGER.error(f"Service {userService.lower()} is not a supported service. Valid services are {SUPPORTED_SERVICES}")
-            sys.exit(1)
+    if len(localArgs.services) > 0:
+        for userService in localArgs.services:
+            if userService.lower() not in SUPPORTED_SERVICES:
+                LOGGER.error(f"Service {userService.lower()} is not a supported service. Valid services are {SUPPORTED_SERVICES}")
+                sys.exit(1)
+    else:
+        LOGGER.error("No --services were specified (for example '--services http socks openvpn')")
+        sys.exit(1)
 
     return localArgs
 
@@ -250,7 +254,7 @@ def generatePassword():
     """
     Generates a secure password
     """
-    return "".join(secrets.choice(string.ascii_letters + string.digits + string.punctuation) for i in range(20))
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(20))
 
 
 def deployCloudTemplate():
@@ -290,6 +294,11 @@ def deployCloudTemplate():
                     "UsePreviousValue": False
                 },
                 {
+                    "ParameterKey": "EC2IPAddressField",
+                    "ParameterValue": f"{newStackName}EC2IPAddressField",
+                    "UsePreviousValue": False
+                },
+                {
                     "ParameterKey": "KeyPairName",
                     "ParameterValue": f"{newStackName}KeyPair",
                     "UsePreviousValue": False
@@ -318,19 +327,27 @@ def loginEC2Box(stackId: str):
     """
     Starts and returns a SSH session inside the EC2 box
     """
-    # Get keypair id
+    # Get keypair name
     LOGGER.info("Getting ID of EC2 keypair resource...")
     try:
-        keyPairId = CLOUD_FORMATION.describe_stack_resources(StackName=stackId, LogicalResourceId="KeyPair")["StackResources"][0]["PhysicalResourceId"]
+        keyPairName = CLOUD_FORMATION.describe_stack_resources(StackName=stackId, LogicalResourceId="KeyPair")["StackResources"][0]["PhysicalResourceId"]
     except Exception as e:
         LOGGER.error(f"FAILED to retrieve physical resource ID of key pair for {stackId}")
         raise e
     
+    # Get keypair id
+    ec2 = AWS.client("ec2")
+    try:
+        keyPairId = ec2.describe_key_pairs(KeyNames=[keyPairName])["KeyPairs"][0]["KeyPairId"]
+    except Exception as e:
+        LOGGER.error(f"FAILED to retrieve key pair id for key {keyPairName}")
+        raise e
+
     # Get private key
     LOGGER.info("Retrieving SSH private key for EC2 box from Systems Manager...")
     ssm = AWS.client('ssm')
     try:
-        ec2PrivateKey = ssm.get_parameter(Name=f"/ec2/keypair/{keyPairId}", WithDecryption=False)["Parameter"]["Value"]
+        ec2PrivateKey = ssm.get_parameter(Name=f"/ec2/keypair/{keyPairId}", WithDecryption=True)["Parameter"]["Value"]
     except Exception as e:
         LOGGER.error(f"FAILED to get private key '/ec2/keypair/{keyPairId}' value")
         raise e
@@ -342,7 +359,10 @@ def loginEC2Box(stackId: str):
         SSH_CLIENT.connect(
             hostname=ec2Ip,
             username="ubuntu",
-            pkey=ec2PrivateKey
+            pkey=RSAKey.from_private_key(io.StringIO(ec2PrivateKey)),
+            auth_timeout=60,
+            channel_timeout=60,
+            banner_timeout=60
         )
         return ec2Ip
     except Exception as e:
@@ -361,36 +381,55 @@ def setupEC2Box():
     scriptResult = 1
     try:
         if os.path.exists(ARGS.install_script):
-            SCP.put(files=ARGS.install_script, remote_path=SCRIPT_PATH)
+            try:
+                SCP.put(files=ARGS.install_script, remote_path=SCRIPT_PATH)
+            except Exception as e:
+                LOGGER.error("FAILED to copy install script to EC2 box")
+                raise e
         else:
             LOGGER.error(f"Could not find install-script.sh file at {ARGS.install_script}")
             sys.exit(1)
         
         # Generate service credentials
-        httpPassword = generatePassword()
-        openvpnPassword = generatePassword()
-        socksPassword = generatePassword()
+        args = ""
+        httpPassword = ""
+        if "http" in ARGS.services:
+            httpPassword = generatePassword()
+            args += f"-h '{ARGS.http_user}:{httpPassword}' "
+        openvpnPassword = ""
+        if "openvpn" in ARGS.services:
+            openvpnPassword = generatePassword()
+            args += f"-o '{ARGS.openvpn_user}:{openvpnPassword}' "
+        socksPassword = ""
+        if "socks" in ARGS.services:
+            socksPassword = generatePassword()
+            args += f"-s '{ARGS.socks_user}:{socksPassword}' "
 
         # Run install script (30min timeout)
-        LOGGER.info(f"Executing install script {SCRIPT_PATH}")
-        script = f"""
-        chmod +x {SCRIPT_PATH} && HTTP_USER={ARGS.http_user} HTTP_PASSWORD={httpPassword} OPENVPN_USER={ARGS.openvpn_user} OPENVPN_PASSWORD={openvpnPassword} SOCKS_USER={ARGS.socks_user} SOCKS_PASSWORD={socksPassword} bash {SCRIPT_PATH}
-        """
-        stdin, stdout, stderr = SSH_CLIENT.exec_command(command=script, timeout=ARGS.timeout)
-        LOGGER.info(f"STDOUT:\n{stdout.readlines()}")
-        LOGGER.info(f"STDERR:\n{stderr.readlines()}")
+        LOGGER.info(f"Executing install script at {SCRIPT_PATH} (this may take a while)")
+        try:
+            # TODO: Figure out a way to pass named args to a script without saving the creds to a file somewhere ideally
+            stdin, stdout, stderr = SSH_CLIENT.exec_command(
+                command=f"sudo chmod +x {SCRIPT_PATH} ; sudo {SCRIPT_PATH} {args} ",
+                timeout=ARGS.timeout
+            )
+            LOGGER.info(f"STDOUT:\n{stdout.readlines()}")
+            LOGGER.info(f"STDERR:\n{stderr.readlines()}")
+            if len(stderr.readlines()) >= 1:
+                raise Exception("An error occured during installation of software, check the STDERR output above")
+        except Exception as e:
+            LOGGER.error("Install script did not execute successfully (STDOUT and STDERR are above)")
+            raise e
         # Get result
         scriptResult = stdout.channel.recv_exit_status()
 
         # Retrieve openvpn config file
-        try:
-            SCP.get(remote_path=f"/home/ubuntu/{ARGS.openvpn_user}.ovpn", local_path=ARGS.openvpn_config)
-        except Exception as e:
-            LOGGER.error("FAILED to retrieve openvpn config file from the EC2 box")
-            raise e
-    except Exception as e:
-        LOGGER.error("FAILED to copy over and/or run the install script")
-        raise e
+        if openvpnPassword != "":
+            try:
+                SCP.get(remote_path=f"/home/ubuntu/{ARGS.openvpn_user}.ovpn", local_path=ARGS.openvpn_config)
+            except Exception as e:
+                LOGGER.error("FAILED to retrieve openvpn config file from the EC2 box")
+                raise e
     finally:
         LOGGER.info("Closing SSH connections...")
         SCP.close()
@@ -398,6 +437,11 @@ def setupEC2Box():
 
     return {
         "code": scriptResult,
+        "usernames": {
+            "http": ARGS.http_user,
+            "openvpn": ARGS.openvpn_user,
+            "socks": ARGS.socks_user
+        },
         "passwords": {
             "http": httpPassword,
             "openvpn": openvpnPassword,
@@ -477,7 +521,6 @@ def main():
         else:
             print(json.dumps(outputs, indent=2))
     LOGGER.info(f"All stages complete. Proxy is available at {ec2Ip}.")
-    print(f"All stages complete. Proxy is available at {ec2Ip}.")
 
 
 if __name__ == "__main__":
@@ -485,5 +528,5 @@ if __name__ == "__main__":
         ARGS = parseArgs()
         main()
     except KeyboardInterrupt:
-        LOGGER.error("Keyboard interrupt recieved from user. Exiting...")
+        LOGGER.warning("Keyboard interrupt recieved from user. Exiting...")
         sys.exit(1)

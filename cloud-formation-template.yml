@@ -5,6 +5,9 @@ Parameters:
   EC2Name:
     Type: String
     Description: The name for the ec2 box to be created
+  EC2IPAddressField:
+    Type: String
+    Description: The output field of the EC2 IP address
   KeyPairName:
     Type: String
     Description: The name for the key pair to be created
@@ -88,7 +91,7 @@ Resources:
 
 Outputs:
   EC2IpAddress:
-    Description: The IP address of the ec2 box
+    Description: The IP address of the EC2 box
     Value: !GetAtt EC2Image.PublicIp
     Export:
-      Name: EC2IpAddress
+      Name: !Ref EC2IPAddressField
