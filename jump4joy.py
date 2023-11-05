@@ -133,15 +133,15 @@ def parseArgs():
     )
     parser.add_argument(
         "--openvpn-user",
-        help="Username of the OpenVPN user (password will be generated automatically). Defaults to 'openvpnuser123'",
+        help="Clientname of the OpenVPN client. Defaults to 'openvpnclient123'",
         required=False,
-        default="openvpnuser123"
+        default="openvpnclient123"
     )
     parser.add_argument(
         "--openvpn-config",
-        help="Path to where the openvpn config file will be output to. Defaults to the current directory",
+        help="Path to where the openvpn config file (containing the connection and authentication information) will be output to. Defaults to the current directory",
         required=False,
-        default=os.getcwd()
+        default=f"{os.getcwd()}{os.sep}openvpnclient123.ovpn"
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -393,28 +393,30 @@ def setupEC2Box():
         # Generate service credentials
         args = ""
         httpPassword = ""
-        if "http" in ARGS.services:
+        if "http" in list(ARGS.services):
             httpPassword = generatePassword()
-            args += f"-h '{ARGS.http_user}:{httpPassword}' "
-        openvpnPassword = ""
-        if "openvpn" in ARGS.services:
-            openvpnPassword = generatePassword()
-            args += f"-o '{ARGS.openvpn_user}:{openvpnPassword}' "
+            args += f"-h {ARGS.http_user}:{httpPassword} "
+        openvpnEnabled = False
+        if "openvpn" in list(ARGS.services):
+            openvpnEnabled = True
+            args += f"-o {ARGS.openvpn_user} "
         socksPassword = ""
-        if "socks" in ARGS.services:
+        if "socks" in list(ARGS.services):
             socksPassword = generatePassword()
-            args += f"-s '{ARGS.socks_user}:{socksPassword}' "
+            args += f"-s {ARGS.socks_user}:{socksPassword} "
 
         # Run install script (30min timeout)
         LOGGER.info(f"Executing install script at {SCRIPT_PATH} (this may take a while)")
         try:
             # TODO: Figure out a way to pass named args to a script without saving the creds to a file somewhere ideally
             stdin, stdout, stderr = SSH_CLIENT.exec_command(
-                command=f"sudo chmod +x {SCRIPT_PATH} ; sudo {SCRIPT_PATH} {args} ",
+                command=f"sudo chmod +x {SCRIPT_PATH} ; sudo {SCRIPT_PATH} {args}",
                 timeout=ARGS.timeout
             )
-            LOGGER.info(f"STDOUT:\n{stdout.readlines()}")
-            LOGGER.info(f"STDERR:\n{stderr.readlines()}")
+            stdoutParsed = " ".join(stdout.readlines())
+            stderrParsed = " ".join(stderr.readlines())
+            LOGGER.info(f"STDOUT:\n{stdoutParsed}")
+            LOGGER.info(f"STDERR:\n{stderrParsed}")
             if len(stderr.readlines()) >= 1:
                 raise Exception("An error occured during installation of software, check the STDERR output above")
         except Exception as e:
@@ -424,7 +426,7 @@ def setupEC2Box():
         scriptResult = stdout.channel.recv_exit_status()
 
         # Retrieve openvpn config file
-        if openvpnPassword != "":
+        if openvpnEnabled is True:
             try:
                 SCP.get(remote_path=f"/home/ubuntu/{ARGS.openvpn_user}.ovpn", local_path=ARGS.openvpn_config)
             except Exception as e:
@@ -444,10 +446,10 @@ def setupEC2Box():
         },
         "passwords": {
             "http": httpPassword,
-            "openvpn": openvpnPassword,
+            "openvpn": ARGS.openvpn_user,
             "socks": socksPassword
         },
-        "openvpn_config": ARGS.openvpn_config
+        "openvpn_config_path": ARGS.openvpn_config
     }
 
 
