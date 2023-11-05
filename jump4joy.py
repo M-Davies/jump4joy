@@ -56,12 +56,12 @@ def parseArgs():
     """
     parser = argparse.ArgumentParser(
         prog="jump4joy",
-        description="An AWS EC2 jumpbox/vpnbox/proxybox deployer",
+        description="A simple AWS jumpbox for personal and business use.",
         epilog="Authored by @M-Davies. Please submit feedback and bug reports to https://github.com/M-Davies/jump4joy"
     )
     parser.add_argument(
         "-p", "--profile",
-        help="The profile to use in your AWS credentials file. Defaults to the 'default' profile",
+        help="The profile to use in your AWS credentials file. The --region, --access-key-id and --secret-access-key will override the profile options you provide here. Defaults to the 'default' profile",
         default="default",
         required=False
     )
@@ -72,36 +72,36 @@ def parseArgs():
     )
     parser.add_argument(
         "-i", "--access-key-id",
-        help="AWS Access Key ID with read & write access to CloudFormation and EC2.",
+        help="AWS Access Key ID",
         required=False
     )
     parser.add_argument(
         "-k", "--secret-access-key",
-        help="AWS Secret key of the key you provided for (-i)",
+        help="AWS Secret key of the key you provided for (--access-key-id)",
         required=False
     )
     parser.add_argument(
         "-s", "--services",
-        help="The forwarding proxy or VPN services to install on the box. By default, this includes http and socks proxies, as well as an OpenVPN server. Supply a different set of services here if you so choose, seperated by spaces (e.g. '--services http socks openvpn')",
+        help="The forwarding proxy or VPN services to install on the box. By default, this includes all supported services. Supply a different set of services here if you so choose, seperated by spaces (e.g. '--services http socks openvpn')",
         required=False,
         nargs="+",
         default=SUPPORTED_SERVICES
     )
     parser.add_argument(
         "-t", "--template-file",
-        help=f"Custom CloudFormation template file path. Defaults to the provided template ({os.getcwd()}{os.sep}cloud-formation-template.yml)",
+        help=f"Custom CloudFormation template file path. Defaults to the provided template ({os.getcwd()}{os.sep}cloud-formation-template.yml). The parameters and names must follow a similar format to the ones provided in the example file (cloud-formation-template.yml)",
         required=False,
         default=DEFAULT_TEMPLATE_PATH
     )
     parser.add_argument(
         "-f", "--install-script",
-        help=f"Custom install script to run on the EC2 box. Defaults to the provided template ({os.getcwd()}{os.sep}install-software.sh)",
+        help=f"Custom install script to run on the EC2 box. Defaults to the provided template ({os.getcwd()}{os.sep}install-software.sh). The parameters and names must follow a similar format to the ones provided in the example file (install-software.sh)",
         required=False,
         default=DEFAULT_SCRIPT_PATH
     )
     parser.add_argument(
         "-d", "--disable-colours",
-        help="Disables colouring of log output. You might find this option useful if you're exclusively writing to a log file or on Windows.",
+        help="Disables colouring of log output. You might find this option useful if you're exclusively writing to a log file or running this on Windows.",
         required=False,
         action="store_true",
         default=False
@@ -115,7 +115,7 @@ def parseArgs():
     )
     parser.add_argument(
         "--whitelisted-ip-range",
-        help="Whitelisted Cidr IP address range that can access the jumpbox services. Must be in Cidr format (e.g. '183.231.111.41/32' or '0.0.0.0/0' for publicly accessible). Defaults to your public IP.",
+        help="Whitelisted Cidr IP address range that can access the jumpbox services. Must be in Cidr format (e.g. '183.231.111.41/32' or '0.0.0.0/0' for publicly accessible). Defaults to your public IP and then to publically accessible (if the script cannot work out your public IP).",
         required=False,
         default=getIpCidr(),
     )
@@ -127,7 +127,7 @@ def parseArgs():
     )
     parser.add_argument(
         "--socks-user",
-        help="Username of the SOCKS proxy user (password will be generated automatically). Defaults to 'socksuser123'",
+        help="Username of the SOCKS proxy user (password will be generated automatically). This will also be a non-login user on the EC2 Ubuntu OS. Defaults to 'socksuser123'",
         required=False,
         default="socksuser123"
     )
@@ -139,7 +139,7 @@ def parseArgs():
     )
     parser.add_argument(
         "--openvpn-config",
-        help="Path to where the openvpn config file (containing the connection and authentication information) will be output to. Defaults to the current directory",
+        help="Path to where the OpenVPN config file (containing the connection and authentication information) will be output to. Defaults to the current directory",
         required=False,
         default=f"{os.getcwd()}{os.sep}openvpnclient123.ovpn"
     )
@@ -151,12 +151,12 @@ def parseArgs():
     )
     parser.add_argument(
         "-c", "--credentials-file",
-        help="Saves the credentails for the proxy and VPN services to a JSON file you specify",
+        help="Saves the credentails for the proxy and VPN services to a JSON file you specify instead of STDOUT",
         required=False
     )
     parser.add_argument(
         "-q", "--quiet",
-        help="No output to the console (log file output will still be present if specified), only exceptions will be shown. NOTE: If this option is specified, --credentials-file must also be specified",
+        help="No output to the console (output will be logged to a file), only exceptions will be shown. NOTE: If this option is specified, --credentials-file must also be specified",
         required=False,
         action="store_true"
     )
@@ -182,11 +182,15 @@ def parseArgs():
         LOG_OUTPUT_HANDLER = logging.StreamHandler(sys.stderr)
         LOG_OUTPUT_HANDLER.setFormatter(logFormat)
         LOGGER.addHandler(LOG_OUTPUT_HANDLER)
+    elif localArgs.quiet is True and localArgs.credentials_file is None:
+        raise Exception("ERROR: --credentials-file was not specified. This argument must be set if you're using --quiet mode")
     
     if localArgs.log is not None:
         LOG_FILE_HANDLER = logging.FileHandler(filename=localArgs.log, encoding="utf-8", mode="a")
         LOG_FILE_HANDLER.setFormatter(logFormat)
         LOGGER.addHandler(LOG_FILE_HANDLER)
+    elif localArgs.log is None and localArgs.quiet is True:
+        raise Exception("ERROR: --log was not specified. This argument must be set if you're using --quiet mode")
 
     # Check whitelist is a CIDR address
     try:
@@ -195,9 +199,12 @@ def parseArgs():
         LOGGER.error(f"{localArgs.whitelisted_ip_range} is an invalid Cidr IP address format. All whitelisted IPs must be provided in Cidr format (e.g. '183.231.111.41/32')")
         sys.exit(1)
 
-    # Check if cloud template exists
+    # Check if cloud template and installation script exist
     if os.path.exists(localArgs.template_file) is False:
-        LOGGER.error(f"Could not find cloud formation template file at {localArgs.file}")
+        LOGGER.error(f"Could not find cloud formation template file at {localArgs.template_file}")
+        sys.exit(1)
+    if os.path.exists(localArgs.install_script) is False:
+        LOGGER.error(f"Could not find installation script file at {localArgs.install_script}")
         sys.exit(1)
 
     # Check given services are valid
@@ -232,7 +239,7 @@ def createSession():
             awsConfig.read(configPath)
             region = awsConfig.get(f"profile {ARGS.profile}", "region")
         except Exception:
-            LOGGER.exception("Could not parse home AWS config files. Are these files readable to python?")
+            LOGGER.exception("Could not parse home AWS config files. Are these files readable to python and do the requested entries exist?")
             sys.exit(1)
 
     # Overwrite with custom values if they exist
