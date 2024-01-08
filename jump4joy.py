@@ -237,7 +237,7 @@ def createSession():
             accessKeyId = awsConfig.get(ARGS.profile, "aws_access_key_id")
             secretAccessKey = awsConfig.get(ARGS.profile, "aws_secret_access_key")
             awsConfig.read(configPath)
-            region = awsConfig.get(f"profile {ARGS.profile}", "region")
+            region = awsConfig.get(ARGS.profile, "region")
         except Exception:
             LOGGER.exception("Could not parse home AWS config files. Are these files readable to python and do the requested entries exist?")
             sys.exit(1)
