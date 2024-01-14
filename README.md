@@ -38,6 +38,7 @@ The reasons you may want to self host your own service like this are multifold b
 
 - It's cheaper than paying for a enterprise or subscription service VPN or proxy. For example, according to the November 2023 cost estimates for AWS [here](https://aws.amazon.com/ec2/pricing/on-demand/), the cost of running a `t2.micro` instance in London (which is what this stack uses by default) constantly up for a month is only ~$9.64 ($0.0132 per hour * 730 hours in a month):
 ![Costs matrix](costs.png)
+While the default of this script is to use the `t2.medium` instance type, this is only for redundency reasons.
 - It's more modular. This script allows you to pass your own AWS templates, installation script files and authentication credentials for the various services that will be deployed
 - It's easy and quicker to setup and teardown. Better to have a script that deploys everything you need in one go than creating a new instance and configuring it how you like it each time
 - Variable and anonymous IP addresses. IP addresses belonging to VPNs [are known and blocked](https://cybernews.com/how-to-use-vpn/bypass-vpn-blocks/#types-of-vpn-blocks) by some sites that do not want their users utilising a VPN (*cough* netflix *cough*). Having your own VPN allows you to bypass these problems.

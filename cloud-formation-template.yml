@@ -47,7 +47,7 @@ Resources:
           - RegionMap
           - !Ref AWS::Region
           - UbuntuAMI
-      InstanceType: t2.micro
+      InstanceType: t2.medium
       Tags:
         - Key: Name
           Value: !Ref EC2Name
@@ -71,22 +71,22 @@ Resources:
           FromPort: 8888
           ToPort: 8888
           IpProtocol: tcp
+          Description: Allow HTTP Proxy Traffic
         - CidrIp: !Ref Cidr
           FromPort: 1194
           ToPort: 1194
-          IpProtocol: tcp
-        - CidrIp: !Ref Cidr
-          FromPort: 1194
-          ToPort: 1194
-          IpProtocol: udp
+          IpProtocol: -1
+          Description: Allow OpenVPN Traffic
         - CidrIp: !Ref Cidr
           FromPort: 1080
           ToPort: 1080
           IpProtocol: tcp
+          Description: Allow SOCKS5 Proxy Traffic
         - CidrIp: !Ref Cidr
           FromPort: 22
           ToPort: 22
           IpProtocol: tcp
+          Description: Allow SSH Traffic to Known IP
 
 
 Outputs:
