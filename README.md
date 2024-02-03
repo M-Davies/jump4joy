@@ -71,61 +71,49 @@ This is one typical method of installation for general use, authentication to AW
 
 ```
 $ python jump4joy.py -h
-usage: jump4joy [-h] [-p PROFILE] [-r REGION] [-i ACCESS_KEY_ID] [-k SECRET_ACCESS_KEY] [-s SERVICES [SERVICES ...]]
-                [-t TEMPLATE_FILE] [-f INSTALL_SCRIPT] [-d] [--timeout TIMEOUT] [--whitelisted-ip-range WHITELISTED_IP_RANGE]
-                [--http-user HTTP_USER] [--socks-user SOCKS_USER] [--openvpn-user OPENVPN_USER]
-                [--openvpn-config OPENVPN_CONFIG] [-v] [-c CREDENTIALS_FILE] [-q] [-l LOG]
+usage: jump4joy [-h] [-p PROFILE] [-r REGION] [-i ACCESS_KEY_ID] [-k SECRET_ACCESS_KEY] [-s SERVICES [SERVICES ...]] [-t TEMPLATE_FILE] [-f INSTALL_SCRIPT] [--disable-colours] [--timeout TIMEOUT] [--whitelisted-ip-range WHITELISTED_IP_RANGE] [--http-user HTTP_USER]
+                [--socks-user SOCKS_USER] [--openvpn-user OPENVPN_USER] [--openvpn-config OPENVPN_CONFIG] [-v] [-c CREDENTIALS_FILE] [-q] [-l LOG] [-d DELETE_STACK]
 
 A simple AWS jumpbox for personal and business use.
 
 options:
   -h, --help            show this help message and exit
   -p PROFILE, --profile PROFILE
-                        The profile to use in your AWS credentials file. The --region, --access-key-id and --secret-access-key
-                        will override the profile options you provide here. Defaults to the 'default' profile
+                        The profile to use in your AWS credentials file. The --region, --access-key-id and --secret-access-key will override the profile options you provide here. Defaults to the 'default' profile
   -r REGION, --region REGION
-                        The region to create your jumpbox in. The credentials you provide should have access to the region you
-                        specify here
+                        The region to create your jumpbox in. The credentials you provide should have access to the region you specify here
   -i ACCESS_KEY_ID, --access-key-id ACCESS_KEY_ID
                         AWS Access Key ID
   -k SECRET_ACCESS_KEY, --secret-access-key SECRET_ACCESS_KEY
                         AWS Secret key of the key you provided for (--access-key-id)
   -s SERVICES [SERVICES ...], --services SERVICES [SERVICES ...]
-                        The forwarding proxy or VPN services to install on the box. By default, this includes all supported
-                        services. Supply a different set of services here if you so choose, seperated by spaces (e.g. '--
-                        services http socks openvpn')
+                        The forwarding proxy or VPN services to install on the box. By default, this includes all supported services. Supply a different set of services here if you so choose, seperated by spaces (e.g. '--services http socks openvpn')
   -t TEMPLATE_FILE, --template-file TEMPLATE_FILE
-                        Custom CloudFormation template file path. Defaults to the provided template
-                        (/Users/morgan/Documents/Repos/jump4joy/cloud-formation-template.yml). The parameters and names must
-                        follow a similar format to the ones provided in the example file (cloud-formation-template.yml)
+                        Custom CloudFormation template file path. Defaults to the provided template (C:\Users\toxic\Documents\Repos\jump4joy\cloud-formation-template.yml). The parameters and names must follow a similar format to the ones provided in the example file (cloud-
+                        formation-template.yml)
   -f INSTALL_SCRIPT, --install-script INSTALL_SCRIPT
-                        Custom install script to run on the EC2 box. Defaults to the provided template
-                        (/Users/morgan/Documents/Repos/jump4joy/install-software.sh). The parameters and names must follow a
-                        similar format to the ones provided in the example file (install-software.sh)
-  -d, --disable-colours
-                        Disables colouring of log output. You might find this option useful if you're exclusively writing to a
-                        log file or running this on Windows.
+                        Custom install script to run on the EC2 box. Defaults to the provided template (C:\Users\toxic\Documents\Repos\jump4joy\install-software.sh). The parameters and names must follow a similar format to the ones provided in the example file (install-
+                        software.sh)
+  --disable-colours     Disables colouring of log output. You might find this option useful if you're exclusively writing to a log file or running this on Windows.
   --timeout TIMEOUT     Timeout for the software install script in seconds. Defaults to 1800 (30 minutes)
   --whitelisted-ip-range WHITELISTED_IP_RANGE
-                        Whitelisted Cidr IP address range that can access the jumpbox services. Must be in Cidr format (e.g.
-                        '183.231.111.41/32' or '0.0.0.0/0' for publicly accessible). Defaults to your public IP and then to
-                        publically accessible (if the script cannot work out your public IP).
+                        Whitelisted Cidr IP address range that can access the jumpbox services. Must be in Cidr format (e.g. '183.231.111.41/32' or '0.0.0.0/0' for publicly accessible). Defaults to your public IP and then to publically accessible (if the script cannot work out
+                        your public IP).
   --http-user HTTP_USER
                         Username of the HTTP proxy user (password will be generated automatically). Defaults to 'httpuser123'
   --socks-user SOCKS_USER
-                        Username of the SOCKS proxy user (password will be generated automatically). This will also be a non-
-                        login user on the EC2 Ubuntu OS. Defaults to 'socksuser123'
+                        Username of the SOCKS proxy user (password will be generated automatically). This will also be a non-login user on the EC2 Ubuntu OS. Defaults to 'socksuser123'
   --openvpn-user OPENVPN_USER
                         Clientname of the OpenVPN client. Defaults to 'openvpnclient123'
   --openvpn-config OPENVPN_CONFIG
-                        Path to where the OpenVPN config file (containing the connection and authentication information) will be
-                        output to. Defaults to the current directory
+                        Path to where the OpenVPN config file (containing the connection and authentication information) will be output to. Defaults to the current directory
   -v, --verbose         Increase verbosity, will report progress for each interaction rather than just warnings and errors
   -c CREDENTIALS_FILE, --credentials-file CREDENTIALS_FILE
                         Saves the credentails for the proxy and VPN services to a JSON file you specify instead of STDOUT
-  -q, --quiet           No output to the console (output will be logged to a file), only exceptions will be shown. NOTE: If this
-                        option is specified, --credentials-file must also be specified
+  -q, --quiet           No output to the console (output will be logged to a file), only exceptions will be shown. NOTE: If this option is specified, --credentials-file must also be specified
   -l LOG, --log LOG     Produces a log file of verbose and non-verbose debug information at the path provided.
+  -d DELETE_STACK, --delete-stack DELETE_STACK
+                        Tears down the specified stack (or all stacks if 'all' is supplied)
 
 Authored by @M-Davies. Please submit feedback and bug reports to https://github.com/M-Davies/jump4joy
 ```
