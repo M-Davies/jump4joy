@@ -100,7 +100,7 @@ def parseArgs():
         default=DEFAULT_SCRIPT_PATH
     )
     parser.add_argument(
-        "-d", "--disable-colours",
+        "--disable-colours",
         help="Disables colouring of log output. You might find this option useful if you're exclusively writing to a log file or running this on Windows.",
         required=False,
         action="store_true",
@@ -164,6 +164,12 @@ def parseArgs():
         "-l", "--log",
         help="Produces a log file of verbose and non-verbose debug information at the path provided.",
         required=False
+    )
+    parser.add_argument(
+        "-d", "--delete-stack",
+        help="Tears down the specified stack (or all stacks if 'all' is supplied)",
+        required=False,
+        default=None
     )
     localArgs = parser.parse_args()
 
@@ -261,7 +267,7 @@ def generatePassword():
     """
     Generates a secure password
     """
-    return "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(20))
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(15, 20))
 
 
 def deployCloudTemplate():
@@ -424,8 +430,6 @@ def setupEC2Box():
             stderrParsed = " ".join(stderr.readlines())
             LOGGER.info(f"STDOUT:\n{stdoutParsed}")
             LOGGER.info(f"STDERR:\n{stderrParsed}")
-            if len(stderr.readlines()) >= 1:
-                raise Exception("An error occured during installation of software, check the STDERR output above")
         except Exception as e:
             LOGGER.error("Install script did not execute successfully (STDOUT and STDERR are above)")
             raise e
@@ -462,14 +466,31 @@ def setupEC2Box():
 
 def getStackDetails(stackId: str):
     """
-    Returns the details of the created cloud formation stack
+    Returns the details of the created cloud formation stack. The stackId can be the name or the ID
     """
     try:
         return CLOUD_FORMATION.describe_stacks(StackName=stackId)["Stacks"][0]
     except Exception as e:
-        LOGGER.error(f"FAILED to get details for stack '{stackId}'")
+        LOGGER.error(f"FAILED to get details for stack '{stackId}' (non-existent?)")
         raise e
 
+
+def deleteStacks(stackIds: list):
+    """
+    Deletes the specified stacks
+    """
+    try:
+        for stackId in stackIds:
+            if stackId:
+                LOGGER.info(f"Deleting '{stackId}'")
+                CLOUD_FORMATION.delete_stack(StackName=stackId)
+                LOGGER.info(f"Delete initiated for stack '{stackId}'")
+            else:
+                LOGGER.warning(f"Stack '{stackId}' is invalid. Skipping...")
+    except Exception as e:
+        LOGGER.error(f"FAILED to delete stack '{stackId}'")
+        raise e
+    
 
 def main():
     """
@@ -490,46 +511,56 @@ def main():
         raise e
     
     LOGGER.info(f"Successfully authenticated to AWS as {caller['Arn']}")
-    
-    # Start cloud formation build
     CLOUD_FORMATION = AWS.client("cloudformation")
-    stackId = deployCloudTemplate()
-    # Wait for completion
-    stackStatus = getStackDetails(stackId)
-    while stackStatus["StackStatus"] != "CREATE_COMPLETE":
-        # Error out if stack failed to build
-        if stackStatus["StackStatus"] in ["ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "CREATE_FAILED"]:
-            try:
-                LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Reason:\n{stackStatus['StackStatusReason']}.\nPlease see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
-            except KeyError:
-                LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Please see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
-            finally:
-                sys.exit(1)
-        LOGGER.info("Stack is building. Checking again in 10 seconds...")
-        time.sleep(10)
+
+    if len(ARGS.delete_stack) == 0:
+        # Start cloud formation build
+        stackId = deployCloudTemplate()
+        # Wait for completion
         stackStatus = getStackDetails(stackId)
-    LOGGER.info(f"Successfully created jump4joy cloud formation stack '{stackId}'!")
+        while stackStatus["StackStatus"] != "CREATE_COMPLETE":
+            # Error out if stack failed to build
+            if stackStatus["StackStatus"] in ["ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS", "CREATE_FAILED"]:
+                try:
+                    LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Reason:\n{stackStatus['StackStatusReason']}.\nPlease see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
+                except KeyError:
+                    LOGGER.error(f"Stack FAILED to build, exit status {stackStatus['StackStatus']}. Please see the AWS console for more details -> https://{AWS.region_name}.console.aws.amazon.com/cloudformation/home?region={AWS.region_name}#/stacks/events?filteringText=&filteringStatus=active&viewNested=true&stackId={stackId}")
+                finally:
+                    sys.exit(1)
+            LOGGER.info("Stack is building. Checking again in 10 seconds...")
+            time.sleep(10)
+            stackStatus = getStackDetails(stackId)
+        LOGGER.info(f"Successfully created jump4joy cloud formation stack '{stackId}'")
 
-    # Login to EC2 box
-    ec2Ip = loginEC2Box(stackId)
-    LOGGER.info(f"Connected to EC2 box {ec2Ip}")
+        # Login to EC2 box
+        ec2Ip = loginEC2Box(stackId)
+        LOGGER.info(f"Connected to EC2 box {ec2Ip}")
 
-    # Setup EC2 box
-    outputs = setupEC2Box()
-    if outputs["code"] != 0:
-        LOGGER.warning(f"Install script failed to sucessfully complete execution (exit code = {outputs['code']}). Please see the logs above for the reasons why.")
-    else:
-        LOGGER.info("Gathering credentials for services...")
-        if ARGS.quiet is True or ARGS.credentials_file is not None:
-            try:
-                with open(ARGS.credentials_file, "w+") as credFile:
-                    credFile.write(json.dumps(outputs, indent=2))
-            except OSError:
-                LOGGER.warning(f"FAILED to save credentials to {ARGS.credentials_file}, falling back to printing them to STDOUT")
-                print(json.dumps(outputs, indent=2))
+        # Setup EC2 box
+        outputs = setupEC2Box()
+        if outputs["code"] != 0:
+            LOGGER.warning(f"Install script failed to sucessfully complete execution (exit code = {outputs['code']}). Please see the logs above for the reasons why.")
         else:
-            print(json.dumps(outputs, indent=2))
-    LOGGER.info(f"All stages complete. Proxy is available at {ec2Ip}.")
+            LOGGER.info("Gathering credentials for services...")
+            outputs["ipAddress"] = ec2Ip
+            if ARGS.quiet is True or ARGS.credentials_file is not None:
+                try:
+                    with open(ARGS.credentials_file, "w+") as credFile:
+                        credFile.write(json.dumps(outputs, indent=2))
+                except OSError:
+                    LOGGER.warning(f"FAILED to save credentials to {ARGS.credentials_file}, falling back to printing them to STDOUT")
+                    print(json.dumps(outputs, indent=2))
+            else:
+                print(json.dumps(outputs, indent=2))
+        LOGGER.info(f"All stages complete. Jumpbox is available at {ec2Ip}.")
+    else:
+        LOGGER.info("Collecting stacks to delete...")
+        if str(ARGS.delete_stack).lower().strip() == "all":
+            jump4JoyStacks = [getStackDetails(stack["StackId"])["StackId"] for stack in CLOUD_FORMATION.describe_stacks()["Stacks"] if "jump4joyStack" in stack["StackName"]]
+        else:
+            jump4JoyStacks = [getStackDetails(ARGS.delete_stack)["StackId"]]
+        deleteStacks(jump4JoyStacks)
+        LOGGER.info("All stacks deleted")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 #!/bin/bash
 # shellcheck disable=SC2034
 
+set -e
+
 # Parse args
 HTTP_USER=
 HTTP_PASSWORD=
