@@ -169,7 +169,8 @@ def parseArgs():
         "-d", "--delete-stack",
         help="Tears down the specified stack (or all stacks if 'all' is supplied)",
         required=False,
-        default=None
+        nargs="+",
+        default=[]
     )
     localArgs = parser.parse_args()
 
@@ -223,6 +224,11 @@ def parseArgs():
         LOGGER.error("No --services were specified (for example '--services http socks openvpn')")
         sys.exit(1)
 
+    # Make sure the user hasn't just provided the argument without parameters
+    if localArgs.delete_stack is None:
+        LOGGER.error("You must provide a list of stack names to delete or 'all' if you wish to delete all jump4joy stacks")
+        sys.exit(1)
+
     return localArgs
 
 
@@ -267,7 +273,7 @@ def generatePassword():
     """
     Generates a secure password
     """
-    return "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(15, 20))
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for i in range(0, 20))
 
 
 def deployCloudTemplate():
@@ -421,15 +427,18 @@ def setupEC2Box():
         # Run install script (30min timeout)
         LOGGER.info(f"Executing install script at {SCRIPT_PATH} (this may take a while)")
         try:
-            # TODO: Figure out a way to pass named args to a script without saving the creds to a file somewhere ideally
+            # Have to execute script directly, passing a full path doesn't execute the file
             stdin, stdout, stderr = SSH_CLIENT.exec_command(
-                command=f"sudo chmod +x {SCRIPT_PATH} ; sudo {SCRIPT_PATH} {args}",
+                command=f"sudo chmod +x install-script.sh && sudo ./install-script.sh {args} && exit 0",
                 timeout=ARGS.timeout
             )
+            exitCode = stdout.channel.recv_exit_status() # Block until script exits
             stdoutParsed = " ".join(stdout.readlines())
             stderrParsed = " ".join(stderr.readlines())
             LOGGER.info(f"STDOUT:\n{stdoutParsed}")
             LOGGER.info(f"STDERR:\n{stderrParsed}")
+            if exitCode != 0:
+                raise Exception(f"Install script did not successfully exit (exit code was = {exitCode}). See STDOUT and STDERR above for details")
         except Exception as e:
             LOGGER.error("Install script did not execute successfully (STDOUT and STDERR are above)")
             raise e
@@ -457,10 +466,14 @@ def setupEC2Box():
         },
         "passwords": {
             "http": httpPassword,
-            "openvpn": ARGS.openvpn_user,
+            "openvpn": ARGS.openvpn_config,
             "socks": socksPassword
         },
-        "openvpn_config_path": ARGS.openvpn_config
+        "ports": {
+            "http": 8888,
+            "openvpn": 1194,
+            "socks": 1080
+        }
     }
 
 
@@ -555,10 +568,12 @@ def main():
         LOGGER.info(f"All stages complete. Jumpbox is available at {ec2Ip}.")
     else:
         LOGGER.info("Collecting stacks to delete...")
-        if str(ARGS.delete_stack).lower().strip() == "all":
+        jump4JoyStacks = []
+        if str(ARGS.delete_stack[0]).lower().strip() == "all":
             jump4JoyStacks = [getStackDetails(stack["StackId"])["StackId"] for stack in CLOUD_FORMATION.describe_stacks()["Stacks"] if "jump4joyStack" in stack["StackName"]]
         else:
-            jump4JoyStacks = [getStackDetails(ARGS.delete_stack)["StackId"]]
+            for stackName in ARGS.delete_stack:
+                jump4JoyStacks.append(getStackDetails(stackName)["StackId"])
         deleteStacks(jump4JoyStacks)
         LOGGER.info("All stacks deleted")
 

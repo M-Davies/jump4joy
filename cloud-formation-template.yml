@@ -75,8 +75,13 @@ Resources:
         - CidrIp: !Ref Cidr
           FromPort: 1194
           ToPort: 1194
-          IpProtocol: -1
-          Description: Allow OpenVPN Traffic
+          IpProtocol: tcp
+          Description: Allow OpenVPN TCP Traffic
+        - CidrIp: !Ref Cidr
+          FromPort: 1194
+          ToPort: 1194
+          IpProtocol: udp
+          Description: Allow OpenVPN UDP Traffic
         - CidrIp: !Ref Cidr
           FromPort: 1080
           ToPort: 1080
